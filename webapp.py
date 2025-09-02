@@ -11,29 +11,33 @@ app = Flask(__name__)
 @app.route('/signals', methods=['GET'])
 def get_signals():
     """
-    این تابع محتوای فایل signals.json را می‌خواند و نمایش می‌دهد.
+    این تابع محتوای فایل signals.json را می‌خواند
+    و فقط آخرین سیگنال برای هر نماد (symbol) را نمایش می‌دهد.
     """
-    # <<< CHANGE: تغییر منطق این بخش شروع می‌شود
-    # بررسی اینکه آیا فایل وجود دارد یا نه
-    if not os.path.exists(JSON_FILE):
-        # اگر فایل وجود نداشت، به جای خطا، یک لیست خالی برگردان
+    if not os.path.exists(JSON_FILE) or os.path.getsize(JSON_FILE) == 0:
         return jsonify([])
-    # <<< CHANGE: تغییر منطق این بخش تمام می‌شود
-    
+
     try:
-        # اگر فایل خالی بود، باز هم یک لیست خالی برگردان
-        if os.path.getsize(JSON_FILE) == 0:
-            return jsonify([])
-            
         with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        # استفاده از jsonify برای ارسال پاسخ صحیح به صورت JSON
-        return jsonify(data)
+            all_signals = json.load(f)
+
+        # <<< CHANGE: منطق جدید برای پیدا کردن آخرین سیگنال هر ارز شروع می‌شود
+        latest_signals = {}
+        for signal in all_signals:
+            # هر سیگنال جدید برای یک ارز، جایگزین سیگنال قبلی آن در دیکشنری می‌شود
+            symbol = signal.get("symbol")
+            if symbol:
+                latest_signals[symbol] = signal
+        
+        # دیکشنری را به یک لیست تبدیل می‌کنیم تا خروجی JSON یک لیست باشد
+        final_list = list(latest_signals.values())
+        # <<< CHANGE: منطق جدید تمام می‌شود
+
+        return jsonify(final_list)
+        
     except Exception as e:
-        # اگر در خواندن فایل مشکلی پیش آمد، یک پیام خطا در فرمت JSON برگردان
         error_message = {"error": "Could not process signal file", "details": str(e)}
         return jsonify(error_message), 500
 
 if __name__ == '__main__':
-    # برنامه روی پورت 8080 اجرا می‌شود
     app.run(host='0.0.0.0', port=8080, debug=False)
