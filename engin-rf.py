@@ -1,3 +1,4 @@
+# engin-rf.py (نسخه نهایی با ذخیره‌سازی اتمیک)
 import requests
 import pandas as pd
 import sqlite3
@@ -8,8 +9,8 @@ import warnings
 import logging
 import configparser
 import sys
-import json # <<< CHANGE: ماژول json برای کار با فایل جیسون اضافه شد
-import os   # <<< CHANGE: ماژول os برای بررسی وجود فایل اضافه شد
+import json
+import os
 
 # --- 1. تنظیمات اولیه لاگ و کانفیگ ---
 
@@ -30,12 +31,11 @@ config.read('config.ini', encoding='utf-8')
 
 # --- 2. بارگذاری متغیرها از فایل کانفیگ ---
 try:
-    # <<< CHANGE: بخش تلگرام حذف شد چون دیگر استفاده نمی‌شود
     SYMBOLS_TO_ANALYZE = [symbol.strip() for symbol in config.get('analysis', 'symbols').split(',')]
     RESOLUTION_TO_ANALYZE = config.getint('analysis', 'resolution')
     CANDLE_COUNT = config.getint('analysis', 'candle_count')
     DB_FILE = config.get('database', 'db_file')
-    JSON_OUTPUT_FILE = 'signals.json' # <<< CHANGE: نام فایل خروجی جیسون
+    JSON_OUTPUT_FILE = 'signals.json'
 except (configparser.NoSectionError, configparser.NoOptionError) as e:
     logger.error(f"Error reading config.ini file: {e}")
     exit()
@@ -49,21 +49,18 @@ RF_SETTINGS = {
 
 # --- 3. توابع اصلی برنامه ---
 
-# <<< CHANGE: تابع send_telegram_signal به طور کامل حذف شد
-
-# <<< CHANGE: تابع جدید برای ذخیره سیگنال در فایل JSON
 def save_signal_to_json(signal_data):
     """
-    این تابع یک سیگنال جدید را به فایل JSON اضافه می‌کند.
-    اگر فایل وجود نداشته باشد، آن را ایجاد می‌کند.
+    این تابع یک سیگنال جدید را به صورت اتمیک به فایل JSON اضافه می‌کند.
+    ابتدا در یک فایل موقت می‌نویسد و سپس نام آن را تغییر می‌دهد تا از بروز خطا جلوگیری شود.
     """
     signals = []
-    # اگر فایل وجود داشت و خالی نبود، محتوای آن را بخوان
+    # اگر فایل اصلی وجود داشت و خالی نبود، محتوای آن را بخوان
     if os.path.exists(JSON_OUTPUT_FILE) and os.path.getsize(JSON_OUTPUT_FILE) > 0:
         try:
             with open(JSON_OUTPUT_FILE, 'r', encoding='utf-8') as f:
                 signals = json.load(f)
-            # اطمینان حاصل کنید که محتوای خوانده شده یک لیست است
+            # اطمینان از اینکه محتوای فایل یک لیست است
             if not isinstance(signals, list):
                 logger.warning(f"{JSON_OUTPUT_FILE} does not contain a list. Initializing a new list.")
                 signals = []
@@ -74,13 +71,22 @@ def save_signal_to_json(signal_data):
     # سیگنال جدید را به لیست اضافه کن
     signals.append(signal_data)
     
-    # لیست آپدیت شده را در فایل بنویس
+    # --- بخش کلیدی راه حل ---
+    temp_file_name = JSON_OUTPUT_FILE + '.tmp'
     try:
-        with open(JSON_OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        # 1. محتوای جدید را در یک فایل موقت بنویس
+        with open(temp_file_name, 'w', encoding='utf-8') as f:
             json.dump(signals, f, indent=4, ensure_ascii=False)
+        
+        # 2. فایل موقت را به نام فایل اصلی تغییر نام بده (این عملیات اتمیک است)
+        os.replace(temp_file_name, JSON_OUTPUT_FILE)
+        
         logger.info(f"✅ New signal successfully saved to {JSON_OUTPUT_FILE}")
     except Exception as e:
-        logger.error(f"❌ Error saving signal to {JSON_OUTPUT_FILE}: {e}")
+        logger.error(f"❌ Error saving signal atomically to {JSON_OUTPUT_FILE}: {e}")
+        # اگر خطایی رخ داد، فایل موقت را پاک کن
+        if os.path.exists(temp_file_name):
+            os.remove(temp_file_name)
 
 
 def convert_resolution_to_period(resolution_minutes):
@@ -111,7 +117,6 @@ def fetch_coinex_data(market, resolution, limit):
         return None
 
 def calculate_range_filter(df, settings):
-    # این تابع بدون تغییر باقی می‌ماند
     h_val = df['high'] if settings['mov_src'] == 'Wicks' else df['close']
     l_val = df['low'] if settings['mov_src'] == 'Wicks' else df['close']
     avg_price = (h_val + l_val) / 2
@@ -175,7 +180,6 @@ if __name__ == "__main__":
     
     while True:
         try:
-            # از همان منطق زمان‌بندی بهبودیافته استفاده می‌کنیم
             now_utc = datetime.now(UTC)
             resolution = RESOLUTION_TO_ANALYZE
             minutes_to_next_candle = resolution - (now_utc.minute % resolution)
@@ -205,7 +209,6 @@ if __name__ == "__main__":
                         last_signal = last_sent_signal_type.get(key)
                         
                         if new_signal != last_signal:
-                            # <<< CHANGE: به جای ساختن پیام تلگرام، یک دیکشنری برای JSON می‌سازیم
                             signal_payload = {
                                 "symbol": symbol,
                                 "timeframe_minutes": RESOLUTION_TO_ANALYZE,
@@ -213,7 +216,6 @@ if __name__ == "__main__":
                                 "price": closed_candle['close'],
                                 "signal_time_utc": closed_candle.name.strftime('%Y-%m-%d %H:%M:%S')
                             }
-                            # <<< CHANGE: تابع جدید را برای ذخیره سیگنال فراخوانی می‌کنیم
                             save_signal_to_json(signal_payload)
                             last_sent_signal_type[key] = new_signal
                         else:
@@ -224,5 +226,4 @@ if __name__ == "__main__":
             break
         except Exception as e:
             logger.error(f"An unexpected error occurred in the main loop: {e}", exc_info=True)
-            # <<< CHANGE: پیام خطای تلگرام حذف شد
             time.sleep(300)
