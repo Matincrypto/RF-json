@@ -1,4 +1,4 @@
-# engin-rf.py (نسخه نهایی با ذخیره‌سازی اتمیک)
+# engin-rf.py (Final Version)
 import requests
 import pandas as pd
 import sqlite3
@@ -11,9 +11,10 @@ import configparser
 import sys
 import json
 import os
+import random
+import string
 
-# --- 1. تنظیمات اولیه لاگ و کانفیگ ---
-
+# --- 1. Initial Config and Logging ---
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -29,7 +30,7 @@ logger.addHandler(stream_handler)
 config = configparser.ConfigParser()
 config.read('config.ini', encoding='utf-8')
 
-# --- 2. بارگذاری متغیرها از فایل کانفیگ ---
+# --- 2. Load Variables from Config File ---
 try:
     SYMBOLS_TO_ANALYZE = [symbol.strip() for symbol in config.get('analysis', 'symbols').split(',')]
     RESOLUTION_TO_ANALYZE = config.getint('analysis', 'resolution')
@@ -40,54 +41,42 @@ except (configparser.NoSectionError, configparser.NoOptionError) as e:
     logger.error(f"Error reading config.ini file: {e}")
     exit()
 
-# --- تنظیمات ثابت اندیکاتور Range Filter ---
+# --- Range Filter Indicator Settings ---
 RF_SETTINGS = {
     'f_type': "Type 1", 'mov_src': "Close", 'rng_qty': 2.618,
     'rng_scale': "Average Change", 'rng_per': 14, 'smooth_range': True,
     'smooth_per': 27, 'av_vals': True, 'av_samples': 2
 }
 
-# --- 3. توابع اصلی برنامه ---
+# --- 3. Main Application Functions ---
+
+def generate_custom_id():
+    """
+    Generates a unique ID with a custom format:
+    A combination of 7 random two-digit numbers and 5 random uppercase letters.
+    """
+    numbers = [f"{random.randint(10, 99)}" for _ in range(7)]
+    letters = [random.choice(string.ascii_uppercase) for _ in range(5)]
+    custom_id = (f"{numbers[0]}{letters[0]}{numbers[1]}{letters[1]}"
+                 f"{numbers[2]}{letters[2]}{numbers[3]}{letters[3]}"
+                 f"{numbers[4]}{letters[4]}{numbers[5]}{numbers[6]}")
+    return custom_id
 
 def save_signal_to_json(signal_data):
     """
-    این تابع یک سیگنال جدید را به صورت اتمیک به فایل JSON اضافه می‌کند.
-    ابتدا در یک فایل موقت می‌نویسد و سپس نام آن را تغییر می‌دهد تا از بروز خطا جلوگیری شود.
+    Atomically writes the latest signal to the JSON file (overwrites).
     """
-    signals = []
-    # اگر فایل اصلی وجود داشت و خالی نبود، محتوای آن را بخوان
-    if os.path.exists(JSON_OUTPUT_FILE) and os.path.getsize(JSON_OUTPUT_FILE) > 0:
-        try:
-            with open(JSON_OUTPUT_FILE, 'r', encoding='utf-8') as f:
-                signals = json.load(f)
-            # اطمینان از اینکه محتوای فایل یک لیست است
-            if not isinstance(signals, list):
-                logger.warning(f"{JSON_OUTPUT_FILE} does not contain a list. Initializing a new list.")
-                signals = []
-        except json.JSONDecodeError:
-            logger.error(f"Could not decode JSON from {JSON_OUTPUT_FILE}. Starting with an empty list.")
-            signals = []
-            
-    # سیگنال جدید را به لیست اضافه کن
-    signals.append(signal_data)
-    
-    # --- بخش کلیدی راه حل ---
     temp_file_name = JSON_OUTPUT_FILE + '.tmp'
     try:
-        # 1. محتوای جدید را در یک فایل موقت بنویس
         with open(temp_file_name, 'w', encoding='utf-8') as f:
-            json.dump(signals, f, indent=4, ensure_ascii=False)
+            json.dump(signal_data, f, indent=4)
         
-        # 2. فایل موقت را به نام فایل اصلی تغییر نام بده (این عملیات اتمیک است)
         os.replace(temp_file_name, JSON_OUTPUT_FILE)
-        
-        logger.info(f"✅ New signal successfully saved to {JSON_OUTPUT_FILE}")
+        logger.info(f"✅ Latest signal successfully overwritten to {JSON_OUTPUT_FILE}")
     except Exception as e:
         logger.error(f"❌ Error saving signal atomically to {JSON_OUTPUT_FILE}: {e}")
-        # اگر خطایی رخ داد، فایل موقت را پاک کن
         if os.path.exists(temp_file_name):
             os.remove(temp_file_name)
-
 
 def convert_resolution_to_period(resolution_minutes):
     if resolution_minutes < 60: return f"{resolution_minutes}min"
@@ -172,10 +161,8 @@ def store_in_db(df, table_name):
     except Exception as e:
         logger.error(f"--> Error saving to database: {e}")
 
-# --- 4. حلقه اصلی برنامه ---
+# --- 4. Main Application Loop ---
 if __name__ == "__main__":
-    last_sent_signal_type = {}
-    
     logger.info("🚀 Starting the analysis bot...")
     
     while True:
@@ -199,27 +186,21 @@ if __name__ == "__main__":
                     analysis_df = calculate_range_filter(ohlc_df, RF_SETTINGS)
                     table_name = f"{symbol}_{RESOLUTION_TO_ANALYZE}m_analysis"
                     store_in_db(analysis_df, table_name)
+                    
                     closed_candle = analysis_df.iloc[-2]
                     new_signal = closed_candle['signal']
                     
                     logger.info(f"Analysis for {symbol}: The closed candle at {closed_candle.name.strftime('%H:%M')} shows signal: {new_signal}")
 
                     if new_signal in ["BUY", "SELL"]:
-                        key = f"{symbol}_{RESOLUTION_TO_ANALYZE}m"
-                        last_signal = last_sent_signal_type.get(key)
-                        
-                        if new_signal != last_signal:
-                            signal_payload = {
-                                "symbol": symbol,
-                                "timeframe_minutes": RESOLUTION_TO_ANALYZE,
-                                "signal_type": new_signal,
-                                "price": closed_candle['close'],
-                                "signal_time_utc": closed_candle.name.strftime('%Y-%m-%d %H:%M:%S')
-                            }
-                            save_signal_to_json(signal_payload)
-                            last_sent_signal_type[key] = new_signal
-                        else:
-                            logger.info(f"A repeat signal ({new_signal}) was found for {symbol}. No new entry will be saved.")
+                        signal_payload = {
+                            "signal_id": generate_custom_id(),
+                            "symbol": symbol,
+                            "signal_side": new_signal,
+                            "entry_price": closed_candle['close'],
+                            "creation_time_utc": closed_candle.name.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        save_signal_to_json(signal_payload)
 
         except KeyboardInterrupt:
             logger.info("Bot stopped manually by the user.")
